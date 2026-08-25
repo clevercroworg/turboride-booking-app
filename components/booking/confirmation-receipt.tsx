@@ -50,7 +50,10 @@ export function ConfirmationReceipt({
       })
     : null
 
-  const balance = Math.max(0, booking.total - booking.amountPaid)
+  const isPayAtVenue = booking.discount === 0
+  const advanceAmount = isPayAtVenue ? Math.min(1000, booking.total) : booking.total
+  const currentPaid = booking.amountPaid > 0 ? booking.amountPaid : (pending ? advanceAmount : 0)
+  const balanceAtVenue = isPayAtVenue ? Math.max(0, booking.total - (booking.amountPaid > 0 ? booking.amountPaid : advanceAmount)) : Math.max(0, booking.total - booking.amountPaid)
 
   return (
     <div>
@@ -107,12 +110,30 @@ export function ConfirmationReceipt({
         <div className="border-t border-border pt-4">
           <ReceiptLine label="Base fare" value={formatINR(booking.basePrice)} />
           {booking.addonsPrice > 0 && <ReceiptLine label="Add-ons" value={formatINR(booking.addonsPrice)} />}
-          {booking.discount > 0 && <ReceiptLine label="Discount" value={`- ${formatINR(booking.discount)}`} />}
-          <ReceiptLine label="GST" value={formatINR(booking.tax)} />
+          {booking.discount > 0 && <ReceiptLine label="Full-pay discount (15%)" value={`- ${formatINR(booking.discount)}`} />}
+          <ReceiptLine label="GST (18%)" value={formatINR(booking.tax)} />
           <div className="my-2 border-t border-border" />
-          <ReceiptLine label="Total" value={formatINR(booking.total)} strong />
-          <ReceiptLine label={pending ? "Amount being processed" : "Paid"} value={formatINR(pending ? booking.total - balance || booking.total : booking.amountPaid)} muted />
-          {balance > 0 && !pending && <ReceiptLine label="Balance (pay at venue)" value={formatINR(balance)} />}
+          <ReceiptLine label="Total Drive Value" value={formatINR(booking.total)} strong />
+          {isPayAtVenue ? (
+            <>
+              <ReceiptLine
+                label={pending ? "Advance being processed" : "Advance paid online"}
+                value={formatINR(currentPaid)}
+                strong
+              />
+              <ReceiptLine
+                label="Balance (pay at venue on drive day)"
+                value={formatINR(balanceAtVenue)}
+                muted
+              />
+            </>
+          ) : (
+            <ReceiptLine
+              label={pending ? "Amount being processed" : "Total paid"}
+              value={formatINR(currentPaid > 0 ? currentPaid : booking.total)}
+              strong
+            />
+          )}
         </div>
       </div>
 
