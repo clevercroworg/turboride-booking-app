@@ -70,6 +70,109 @@ export async function sendBookingConfirmation(reference: string): Promise<void> 
     })
   } catch (err) {
     // Email must never block the booking flow — log and move on.
-    console.log("[v0] sendBookingConfirmation failed:", err instanceof Error ? err.message : err)
+    console.log("[TurboRide] sendBookingConfirmation failed:", err instanceof Error ? err.message : err)
   }
 }
+
+/**
+ * Send the 24-hour pre-drive reminder email for a specific booking.
+ */
+export async function sendPreDriveReminder(reference: string): Promise<boolean> {
+  try {
+    const tpl = await pool.query(
+      `SELECT subject, body, enabled FROM email_templates WHERE key = 'predrive_reminder'`,
+    )
+    const template = tpl.rows[0]
+    if (!template || template.enabled === false) return false
+
+    const res = await pool.query(
+      `SELECT id, car_name, laps, cars, experience_date, time_slot, customer_name, customer_email
+       FROM bookings WHERE id = $1 AND status = 'confirmed'`,
+      [reference],
+    )
+    const b = res.rows[0]
+    if (!b || !b.customer_email) return false
+
+    const settings = await getSettings()
+    const origin = await getOrigin()
+
+    let carDescription = b.car_name || ""
+    if (Array.isArray(b.cars) && b.cars.length > 0) {
+      carDescription = b.cars
+        .map((c: { carName?: string; laps?: number }) => `${c.carName || "Supercar"} (${c.laps || 1} ${Number(c.laps) === 1 ? "lap" : "laps"})`)
+        .join(" + ")
+    }
+
+    const values: Record<string, string | number> = {
+      name: b.customer_name || "Driver",
+      car: carDescription,
+      reference: b.id,
+      date: prettyDate(b.experience_date),
+      slot: b.time_slot || "",
+      location: settings.location,
+      login: `${origin}/account`,
+    }
+
+    const result = await sendEmail({
+      to: b.customer_email,
+      subject: renderMergeTags(template.subject, values),
+      body: renderMergeTags(template.body, values),
+    })
+
+    if (result.ok) {
+      await pool.query(
+        `UPDATE bookings SET reminder_sent_at = NOW() WHERE id = $1`,
+        [reference],
+      )
+      return true
+    }
+    return false
+  } catch (err) {
+    console.log("[TurboRide] sendPreDriveReminder failed:", err instanceof Error ? err.message : err)
+    return false
+  }
+}
+
+/**
+ * Scan for all confirmed bookings scheduled for tomorrow and dispatch pre-drive reminders.
+ */
+export async function processPendingPreDriveReminders(): Promise<{ sent: number; skipped: number }> {
+  try {
+    const tpl = await pool.query(
+      `SELECT subject, body, enabled FROM email_templates WHERE key = 'predrive_reminder'`,
+    )
+    const template = tpl.rows[0]
+    if (!template || template.enabled === false) {
+      return { sent: 0, skipped: 0 }
+    }
+
+    // Find confirmed bookings scheduled for tomorrow where reminder has not been sent yet
+    const res = await pool.query(`
+      SELECT id 
+      FROM bookings 
+      WHERE status = 'confirmed' 
+        AND reminder_sent_at IS NULL 
+        AND customer_email IS NOT NULL
+        AND experience_date IS NOT NULL
+        AND (
+          experience_date::date = CURRENT_DATE + INTERVAL '1 day'
+          OR experience_date::date = CURRENT_DATE
+        )
+    `)
+
+    let sent = 0
+    let skipped = 0
+
+    for (const row of res.rows) {
+      const ok = await sendPreDriveReminder(row.id)
+      if (ok) sent++
+      else skipped++
+    }
+
+    return { sent, skipped }
+  } catch (err) {
+    console.error("[TurboRide Cron] processPendingPreDriveReminders failed:", err)
+    return { sent: 0, skipped: 0 }
+  }
+}
+
