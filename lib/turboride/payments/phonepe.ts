@@ -21,11 +21,8 @@ export type PhonePeConfig = {
 /** Check whether the credentials look like PhonePe v1 (Merchant ID + Salt Key UUID) vs v2 OAuth */
 function isPhonePeV1(cfg: PhonePeConfig): boolean {
   const secret = cfg.clientSecret.trim()
-  const id = cfg.clientId.trim().toUpperCase()
-  // PhonePe v1 salt keys are typically 32-36 hex char UUIDs or Merchant IDs start with PGTEST/M
-  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(secret)
-  const isV1MerchantId = id.startsWith("PGTESTPAYUAT") || id.startsWith("M") || !id.includes("_")
-  return isUuid || isV1MerchantId
+  // PhonePe v1 salt keys are strictly 32-36 hex char UUIDs with dashes
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(secret)
 }
 
 /** Base URLs for v2 (OAuth) and v1 (SHA256 PG) */
@@ -308,11 +305,22 @@ async function phonepeVerifyV2(cfg: PhonePeConfig, merchantOrderId: string): Pro
 export async function phonepeVerify(cfg: PhonePeConfig, merchantOrderId: string): Promise<VerifyResult> {
   try {
     if (isPhonePeV1(cfg)) {
-      return await phonepeVerifyV1(cfg, merchantOrderId)
+      const v1Res = await phonepeVerifyV1(cfg, merchantOrderId)
+      if (v1Res.state !== "pending") return v1Res
+      return await phonepeVerifyV2(cfg, merchantOrderId)
     }
-    return await phonepeVerifyV2(cfg, merchantOrderId)
+    const v2Res = await phonepeVerifyV2(cfg, merchantOrderId)
+    if (v2Res.state !== "pending") return v2Res
+    return await phonepeVerifyV1(cfg, merchantOrderId)
   } catch {
-    return { state: "pending", amountPaise: 0 }
+    try {
+      if (isPhonePeV1(cfg)) {
+        return await phonepeVerifyV2(cfg, merchantOrderId)
+      }
+      return await phonepeVerifyV1(cfg, merchantOrderId)
+    } catch {
+      return { state: "pending", amountPaise: 0 }
+    }
   }
 }
 
